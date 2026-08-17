@@ -70,6 +70,7 @@ addopts = "-q --strict-markers"
 markers = [
     "integration: needs Docker for a real Postgres; skips cleanly when unavailable",
     "gpu: requires an NVIDIA GPU — never runs in CI or on macOS",
+    "network: reaches an external registry; deselect with -m 'not network' when offline",
 ]
 
 [tool.ruff]

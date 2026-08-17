@@ -6,6 +6,9 @@
 # CPU work that must never occupy a GPU node.
 #
 # Expects `vl-base` to be built first (see `mise run build`).
+#
+# verified 2026-08-17: python:3.12-slim resolves, linux/amd64 present. `vl-base` is
+# built locally, so it is not a registry pin.
 
 FROM vl-base AS builder
 RUN uv sync --frozen --no-dev --extra cpu

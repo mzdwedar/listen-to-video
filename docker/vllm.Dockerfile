@@ -8,8 +8,10 @@
 # Same bits, different command. Their vLLM flags have almost nothing in common, so
 # resist any urge to unify them behind one config.
 #
-# NOTE: verify VLLM_TAG against the current release before the first build — this pin
-# was written from memory and has not been checked against the registry.
+# verified 2026-08-17 against docker.io/vllm/vllm-openai (linux/amd64 present). The tag
+# was originally written from memory; it turned out to be real, unlike the CUDA pin in
+# gpu.Dockerfile. Re-check when bumping — vLLM tags are not republished, so a stale pin
+# fails loudly at build rather than drifting underneath us.
 
 ARG VLLM_TAG=v0.11.0
 FROM vllm/vllm-openai:${VLLM_TAG}

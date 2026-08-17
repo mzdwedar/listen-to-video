@@ -8,8 +8,16 @@
 # third-party PPA is needed. `-cudnn-runtime` (not `-devel`) keeps this several GB
 # smaller; the CUDA minor version is pinned because torch and onnxruntime-gpu
 # disagreeing about cuDNN is the classic breakage in this stack.
+#
+# CUDA 12.6.3 rather than 12.4.1: nvidia/cuda publishes ubuntu24.04 only from 12.6.0
+# onward, so 12.4.1-cudnn-runtime-ubuntu24.04 has never existed. Of the two ways to
+# make the pin real — drop to ubuntu22.04, or move the CUDA minor forward — only the
+# latter keeps system Python 3.12, which is the reason 24.04 was picked. 12.6 stays
+# within CUDA 12's minor-version compatibility, so wheels built against 12.4 still run.
+#
+# verified 2026-08-17 against docker.io/nvidia/cuda (linux/amd64 present).
 
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu24.04 AS builder
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 AS builder
 
 ENV UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1 \
@@ -33,7 +41,7 @@ COPY src/ ./src/
 RUN uv sync --frozen --no-dev --extra gpu
 
 
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu24.04 AS runtime
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04 AS runtime
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

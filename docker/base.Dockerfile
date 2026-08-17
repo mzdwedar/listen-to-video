@@ -7,6 +7,9 @@
 #
 # Base dependencies deliberately exclude everything heavy — see pyproject.toml. That
 # is what keeps this image ~250MB and the test suite runnable on an arm64 laptop.
+#
+# verified 2026-08-17: python:3.12-slim and ghcr.io/astral-sh/uv:0.8.15 both resolve,
+# linux/amd64 present.
 
 FROM python:3.12-slim AS base
 

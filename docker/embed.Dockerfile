@@ -12,8 +12,10 @@
 # with large batches. Same weights, two access patterns, because a million spans and
 # one query string have nothing in common but the model.
 #
-# NOTE: verify INFINITY_TAG against the current release before the first build — this
-# pin was written from memory and has not been checked against the registry.
+# verified 2026-08-17 against docker.io/michaelf34/infinity. Note this one publishes a
+# single-architecture (linux/amd64) manifest rather than a multi-arch index, so it will
+# not run on an arm64 dev machine at all — which is fine, since invariant 14 targets
+# amd64 anyway, but it means `docker compose up` here fails on pull, not at runtime.
 
 ARG INFINITY_TAG=0.0.77
 FROM michaelf34/infinity:${INFINITY_TAG}
