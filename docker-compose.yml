@@ -1,0 +1,188 @@
+# Local stack. The same images run on AWS; only the backing services differ —
+# postgres becomes RDS and minio becomes S3, both reached through a connection string.
+#
+# Build order matters: `vl-base` must exist before cpu-worker can build, because
+# cpu.Dockerfile does `FROM vl-base`. Use `mise run build`, which sequences it.
+#
+# Default profile starts only what runs anywhere: postgres, minio, cpu-worker.
+# GPU services live behind `--profile gpu` so `docker compose up -d` works on a laptop.
+
+x-vl-env: &vl-env
+  VL_POSTGRES_DSN: postgresql://vl:vl@postgres:5432/vl
+  VL_S3_ENDPOINT: http://minio:9000
+  VL_S3_BUCKET: vl-artifacts
+  VL_S3_ACCESS_KEY: minioadmin
+  VL_S3_SECRET_KEY: minioadmin
+  VL_VLM_URL: http://vlm-serve:8001/v1
+  VL_LLM_URL: http://llm-serve:8002/v1
+  VL_EMBED_URL: http://embed-serve:8003
+
+x-gpu: &gpu-reservation
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+
+services:
+  postgres:
+    # pgvector, not plain postgres — hybrid retrieval needs vector similarity and SQL
+    # filters in the same query.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: vl
+      POSTGRES_PASSWORD: vl
+      POSTGRES_DB: vl
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vl -d vl"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports: ["9000:9000", "9001:9001"]
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- worker pools ----------------------------------------------------------------
+  # Split by resource profile: ~18s per video is pure ffmpeg and scene detection, which
+  # must never occupy a GPU node.
+
+  cpu-worker:
+    image: vl-cpu
+    build:
+      context: .
+      dockerfile: docker/cpu.Dockerfile
+    environment: *vl-env
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    # Stage is passed at run time: `docker compose run cpu-worker sweep --stage normalize`
+    command: ["--help"]
+
+  gpu-worker:
+    image: vl-gpu
+    build:
+      context: .
+      dockerfile: docker/gpu.Dockerfile
+    profiles: ["gpu"]
+    environment: *vl-env
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    command: ["--help"]
+    <<: *gpu-reservation
+
+  # --- model services --------------------------------------------------------------
+  # vlm-serve and llm-serve are ONE image run twice. Their flags have almost nothing in
+  # common, which is the point: one is prefill-bound captioning, the other is
+  # latency-sensitive structured generation.
+  #
+  # NOTE: vLLM flag names drift between releases. Verify these against the pinned
+  # VLLM_TAG on first build rather than trusting them.
+
+  vlm-serve:
+    image: vl-vllm
+    build:
+      context: .
+      dockerfile: docker/vllm.Dockerfile
+    profiles: ["gpu"]
+    environment:
+      <<: *vl-env
+      VL_MODEL_ID: ${VL_VLM_MODEL_ID:-qwen2.5-vl-7b-fp8}
+    ports: ["8001:8001"]
+    depends_on:
+      minio: {condition: service_healthy}
+    command:
+      - vllm
+      - serve
+      - /var/cache/vl/models/${VL_VLM_MODEL_ID:-qwen2.5-vl-7b-fp8}
+      - --served-model-name=qwen-vl
+      - --port=8001
+      # Frames are capped by AREA so cost does not depend on aspect ratio (invariant 8).
+      - --mm-processor-kwargs={"min_pixels":3136,"max_pixels":200704}
+      - --limit-mm-per-prompt=image=8
+      # 8 frames x 256 tokens + prompt + output, with headroom.
+      - --max-model-len=8192
+      # Prefill-bound, not decode-bound: generous prefill budget, modest concurrency
+      # because each sequence carries heavy image KV.
+      - --max-num-batched-tokens=16384
+      - --max-num-seqs=16
+      - --enable-chunked-prefill
+      - --enable-prefix-caching
+      - --gpu-memory-utilization=0.90
+    volumes:
+      - modelcache:/var/cache/vl/models
+    <<: *gpu-reservation
+
+  llm-serve:
+    image: vl-vllm
+    build:
+      context: .
+      dockerfile: docker/vllm.Dockerfile
+    profiles: ["gpu"]
+    environment:
+      <<: *vl-env
+      VL_MODEL_ID: ${VL_LLM_MODEL_ID:-qwen3-8b-fp8}
+    ports: ["8002:8002"]
+    depends_on:
+      minio: {condition: service_healthy}
+    command:
+      - vllm
+      - serve
+      - /var/cache/vl/models/${VL_LLM_MODEL_ID:-qwen3-8b-fp8}
+      - --served-model-name=qwen3
+      - --port=8002
+      - --max-model-len=16384
+      # Invariant text precedes images in every prompt, so this actually caches.
+      - --enable-prefix-caching
+      # Fusion and `ask` share this service; priority scheduling lets an interactive
+      # question preempt a saturating sweep.
+      - --scheduling-policy=priority
+      # Structured output is mandatory — unconstrained JSON fails silently on a
+      # fraction of videos (invariant 10).
+      - --guided-decoding-backend=xgrammar
+      - --gpu-memory-utilization=0.90
+    volumes:
+      - modelcache:/var/cache/vl/models
+    <<: *gpu-reservation
+
+  embed-serve:
+    image: vl-embed
+    build:
+      context: .
+      dockerfile: docker/embed.Dockerfile
+    profiles: ["gpu"]
+    environment:
+      <<: *vl-env
+      VL_MODEL_ID: ${VL_EMBED_MODEL_ID:-qwen3-embedding-0.6b}
+    ports: ["8003:8003"]
+    depends_on:
+      minio: {condition: service_healthy}
+    command:
+      - v2
+      - --port=8003
+      - --model-id=/var/cache/vl/models/${VL_EMBED_MODEL_ID:-qwen3-embedding-0.6b}
+    volumes:
+      - modelcache:/var/cache/vl/models
+    <<: *gpu-reservation
+
+volumes:
+  pgdata:
+  miniodata:
+  modelcache:
