@@ -24,7 +24,9 @@ RUN apt-get update \
 COPY --from=ghcr.io/astral-sh/uv:0.8.15 /uv /usr/local/bin/uv
 
 WORKDIR /app
-COPY pyproject.toml uv.lock ./
+# README.md is copied because pyproject declares it as the package readme, and
+# hatchling reads it during the build. Omitting it fails at `uv sync`, not here.
+COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project --extra gpu
 
 COPY src/ ./src/

@@ -21,7 +21,9 @@ WORKDIR /app
 
 # Dependencies first, without the project, so a source change doesn't invalidate the
 # dependency layer.
-COPY pyproject.toml uv.lock ./
+# README.md is copied because pyproject declares it as the package readme, and
+# hatchling reads it during the build. Omitting it fails at `uv sync`, not here.
+COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src/ ./src/

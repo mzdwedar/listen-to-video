@@ -131,3 +131,24 @@ def test_build_task_targets_amd64() -> None:
     """
     text = (REPO / "mise.toml").read_text()
     assert "linux/amd64" in text, "the build task must pass --platform linux/amd64"
+
+
+def test_build_metadata_files_reach_the_build_context() -> None:
+    """Files the build backend reads at build time must be COPYed in.
+
+    `pyproject.toml` declares `readme = "README.md"`, and hatchling reads it while
+    building the wheel. Leaving it out of the image fails deep inside `uv sync` with an
+    OSError, not at the COPY line — so this asserts it up front.
+    """
+    pyproject = (REPO / "pyproject.toml").read_text()
+    match = re.search(r'^readme\s*=\s*"([^"]+)"', pyproject, re.MULTILINE)
+    assert match, "pyproject no longer declares a readme; drop this test if intentional"
+    readme = match.group(1)
+
+    for name in POOL_IMAGES:
+        copied = " ".join(instructions(dockerfile(name), "COPY"))
+        # Only images that bring in pyproject themselves need it; `cpu` inherits both
+        # from `vl-base`.
+        if "pyproject.toml" not in copied:
+            continue
+        assert readme in copied, f"{name}.Dockerfile copies pyproject without {readme}"

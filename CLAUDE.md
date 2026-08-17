@@ -103,10 +103,15 @@ Settled as "not now," with the trigger that reopens each. Don't relitigate witho
 
 Thin vertical slices. Each must work end-to-end before the next.
 
-0. Docs + five images + compose — **written; image builds unverified** (no Docker daemon
-   available yet). Run `mise run build` on a machine with Docker before trusting them,
-   and verify the `vllm` and `infinity` base image tags against their registries.
-1. Skeleton: CLI, migrations with partitioning, jobs table (batch claim, lease, heartbeat, dead-letter), `video_stages` barrier, grace timer, repair sweeper, SIGTERM lease release, `vl models prepare`
+0. Docs + five images + compose ✅ — `vl-base` (128MB) and `vl-cpu` (569MB) build and run
+   verified on linux/amd64: non-root, no CUDA, ffmpeg and all cpu extras import.
+   **Still unverified:** `gpu`, `vllm` and `embed` images — they need an NVIDIA host, and
+   the `vllm`/`infinity` base tags are pinned from memory and must be checked against
+   their registries.
+1. Skeleton — **queue done**: migrations, jobs table (batch claim, lease, heartbeat,
+   dead-letter), `video_stages` barrier, fan-out, SIGTERM lease release. **Remaining:**
+   artifact store, `VideoSource` + `LocalFilesSource`, grace timer + repair sweeper
+   (needs the fuse stage), `vl models prepare` (needs a GPU to verify).
 2. Audio only, stored: normalize → asr → spans → embeddings → spine → fusion → interpretations
 3. `vl ask` on audio-only evidence — early, while evidence is cheap
 4. Keyframe detector + OCR — eyeball the detector's picks before incurring VLM cost
