@@ -54,6 +54,7 @@ dev = [
     "ruff>=0.8",
     "testcontainers[postgres]>=4.9",
     "pyyaml>=6.0",
+    "docker>=7.2.0",
 ]
 
 [build-system]
@@ -67,7 +68,7 @@ packages = ["src/vl"]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
 markers = [
-    "integration: requires Docker (Postgres, MinIO) — skipped by default",
+    "integration: needs Docker for a real Postgres; skips cleanly when unavailable",
     "gpu: requires an NVIDIA GPU — never runs in CI or on macOS",
 ]
 
