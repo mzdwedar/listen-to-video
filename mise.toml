@@ -1,0 +1,72 @@
+[tools]
+python = "3.12"
+uv = "latest"
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.install]
+description = "Sync the dev environment"
+run = "uv sync"
+
+[tasks.fmt]
+description = "Format and autofix"
+run = ["uv run ruff format .", "uv run ruff check --fix ."]
+
+[tasks.check]
+description = "Lint and test"
+run = ["uv run ruff format --check .", "uv run ruff check .", "uv run pytest"]
+
+[tasks."build:base"]
+description = "Build the shared base layer (must precede build:cpu)"
+# --platform linux/amd64 is not optional (invariant 14): dev machines are arm64 and
+# ECS is not. A plain `docker build` here produces images ECS silently cannot run.
+run = """
+docker buildx build --platform linux/amd64 \
+  -f docker/base.Dockerfile -t vl-base --load .
+"""
+
+[tasks."build:cpu"]
+description = "Build the cpu pool image"
+depends = ["build:base"]
+run = """
+docker buildx build --platform linux/amd64 \
+  -f docker/cpu.Dockerfile -t vl-cpu --load .
+"""
+
+[tasks."build:gpu"]
+description = "Build the gpu pool image (self-contained; does not use vl-base)"
+run = """
+docker buildx build --platform linux/amd64 \
+  -f docker/gpu.Dockerfile -t vl-gpu --load .
+"""
+
+[tasks."build:vllm"]
+description = "Build the vLLM serving image (runs as both vlm-serve and llm-serve)"
+run = """
+docker buildx build --platform linux/amd64 \
+  -f docker/vllm.Dockerfile -t vl-vllm --load .
+"""
+
+[tasks."build:embed"]
+description = "Build the embedding + rerank serving image"
+run = """
+docker buildx build --platform linux/amd64 \
+  -f docker/embed.Dockerfile -t vl-embed --load .
+"""
+
+[tasks.build]
+description = "Build all five images for linux/amd64"
+depends = ["build:base", "build:cpu", "build:gpu", "build:vllm", "build:embed"]
+
+[tasks.up]
+description = "Start postgres, minio and the cpu worker"
+run = "docker compose up -d"
+
+[tasks."up:gpu"]
+description = "Start everything, including the GPU services (Linux + NVIDIA only)"
+run = "docker compose --profile gpu up -d"
+
+[tasks.down]
+description = "Stop the stack"
+run = "docker compose down"

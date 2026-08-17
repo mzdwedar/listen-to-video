@@ -1,0 +1,79 @@
+[project]
+name = "vl"
+version = "0.1.0"
+description = "Video listening — queryable Voice-of-the-Customer corpus from mass video analysis"
+readme = "README.md"
+requires-python = ">=3.12"
+
+# Base dependencies must stay installable on macOS arm64 so the test suite runs
+# locally. Anything heavy or platform-bound belongs in an extra below.
+dependencies = [
+    "typer>=0.15",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "omegaconf>=2.3",
+    "psycopg[binary,pool]>=3.2",
+    "boto3>=1.35",
+    "httpx>=0.28",
+    "structlog>=24.4",
+]
+
+[project.optional-dependencies]
+# cpu-pool image: normalize, keyframes, fer
+cpu = [
+    "opencv-python-headless>=4.10",
+    "scenedetect>=0.6.4",
+    "imagehash>=4.3",
+    "pillow>=11.0",
+    "mediapipe>=0.10",
+    "onnxruntime>=1.20",
+]
+# gpu-small image: asr, ocr, embed-bulk
+gpu = [
+    "faster-whisper>=1.1",
+    "onnxruntime-gpu>=1.20",
+    "rapidocr-onnxruntime>=1.4",
+    "torch>=2.5",
+    "sentence-transformers>=3.3",
+    "pillow>=11.0",
+]
+# model preparation: quantization
+compress = [
+    "llmcompressor>=0.3",
+    "transformers>=4.47",
+    "huggingface-hub>=0.27",
+]
+
+[project.scripts]
+vl = "vl.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+    "testcontainers[postgres]>=4.9",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "integration: requires Docker (Postgres, MinIO) — skipped by default",
+    "gpu: requires an NVIDIA GPU — never runs in CI or on macOS",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
