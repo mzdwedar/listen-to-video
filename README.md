@@ -70,6 +70,116 @@ ingest ─ VideoSource adapter → content-hash + phash dedup → jobs
 
 Stages are split into pools by **resource profile, not by convenience**. `normalize` and keyframe detection are pure CPU work (~18s per video of ffmpeg and scene detection); running them on GPU nodes would burn GPU-hours on video decoding. The VLM is over half of all GPU time and the only stage needing a large card, so it scales independently of everything else.
 
+### Model view
+
+What each model consumes and what it emits. The dashed line is the boundary the whole design turns on: **evidence is append-only and expensive; interpretation is versioned and cheap to rebuild.** Note that `normalize` and `keyframes` involve no model at all — they are ffmpeg and scene detection, and putting them on a GPU node would be paying for a card to decode video.
+
+```mermaid
+flowchart TB
+    SRC[/"source video — read once, never again"/]
+
+    subgraph EVID["EVIDENCE — append-only, keyed by model_id"]
+        direction TB
+        NORM["normalize<br/>ffmpeg CFR, start offset stripped<br/>no model"]
+        WAV(["audio.wav"])
+        VID(["normalized video"])
+        KEY["keyframes<br/>PySceneDetect + dHash<br/>no model"]
+        JPG(["~40 JPEGs selected from ~5,400 frames"])
+        ASR["asr<br/>faster-whisper large-v3<br/>int8_float16"]
+        OCR["ocr<br/>RapidOCR, PP-OCR weights<br/>ONNX Runtime"]
+        VLM["vlm<br/>Qwen2.5-VL-7B FP8<br/>~256 visual tokens per frame"]
+        FER["fer<br/>MediaPipe + HSEmotion<br/>ONNX Runtime CPU"]
+        EMB["embed-bulk<br/>Qwen3-Embedding-0.6B<br/>never quantized"]
+        SPANS[("evidence_spans<br/>SPEECH · SCREEN · VISUAL · FACE")]
+        VECS[("span_embeddings<br/>pgvector")]
+    end
+
+    TL["timeline spine<br/>speech segments + synthetic silence<br/>all times in normalized-media seconds"]
+
+    subgraph INTERP["INTERPRETATION — versioned, keyed by prompt_version + model_id"]
+        FUSE["fuse<br/>Qwen3-8B FP8, guided decoding<br/>degraded prompts name what is missing"]
+        INTS[("interpretations<br/>intent · fused sentiment · text_only_label")]
+    end
+
+    subgraph ASKING["ask — interactive, preempts fusion on the shared LLM"]
+        Q[/"analyst question"/]
+        RET["hybrid retrieval + RRF<br/>then Qwen3-Embedding + bge-reranker"]
+        ANS["Qwen3-8B FP8, guided decoding"]
+        OUT[/"answer + video_id @ timestamp"/]
+    end
+
+    SRC --> NORM
+    NORM --> WAV
+    NORM --> VID
+    VID --> KEY
+    KEY --> JPG
+    WAV --> ASR
+    JPG --> OCR
+    JPG --> VLM
+    JPG --> FER
+    ASR --> SPANS
+    OCR --> SPANS
+    VLM --> SPANS
+    FER --> SPANS
+    ASR --> EMB
+    EMB --> VECS
+    SPANS --> TL
+    TL --> FUSE
+    FUSE --> INTS
+    Q --> RET
+    SPANS --> RET
+    VECS --> RET
+    RET --> ANS
+    ANS --> OUT
+    SPANS -.->|"verbatim quote validation"| FUSE
+    SPANS -.->|"verbatim quote validation"| ANS
+```
+
+Two edges are worth reading carefully. `SPANS -.-> FUSE` and `SPANS -.-> ANS` are the **verbatim quote validation** paths: nothing quoted is persisted or returned without matching stored evidence first. And `INTERP` reads only from the evidence store, never from the GPU — which is what makes `vl reinterpret --prompt-version v4` a minutes-long job rather than an 11,000 GPU-hour one.
+
+### Infrastructure view
+
+What runs where. The same five images run locally and on AWS; only the backing services change.
+
+```mermaid
+flowchart TB
+    ING[/"vl ingest<br/>content hash + phash dedup"/]
+    Q[("jobs table<br/>batch claim · FOR UPDATE SKIP LOCKED<br/>lease · heartbeat · dead-letter")]
+
+    subgraph POOLS["worker pools — split by resource profile"]
+        direction TB
+        PC["cpu · vl-cpu<br/>normalize · keyframes · fer<br/>ingest · sweepers · report<br/>~600 MB, no CUDA ever"]
+        PS["gpu-small · vl-gpu<br/>asr · ocr · embed-bulk<br/>CUDA 12.6.3 cudnn-runtime"]
+        PL["gpu-large · vl-vllm<br/>vlm — ~55% of all GPU time"]
+    end
+
+    subgraph SERVICES["model services — weights synced by model_id"]
+        direction TB
+        SV["vlm-serve · vl-vllm<br/>prefill-tuned"]
+        SL["llm-serve · vl-vllm<br/>fusion + ask"]
+        SE["embed-serve · vl-embed<br/>query embed + rerank"]
+    end
+
+    subgraph STATE["backing services"]
+        direction TB
+        PG[("Postgres + pgvector<br/>local: container · AWS: RDS")]
+        OBJ[("object storage<br/>local: MinIO · AWS: S3")]
+    end
+
+    ING --> Q
+    Q -->|"claim ~200 videos, load model once"| POOLS
+    POOLS --> PG
+    POOLS --> OBJ
+    PL --> SV
+    SL --> SE
+    SL --> PG
+    OBJ -->|"weight sync, never from Hugging Face"| SERVICES
+    PG -.->|"queue depth drives per-pool autoscaling"| POOLS
+    POOLS -.->|"SIGTERM releases leases, Spot gives 2 min"| Q
+```
+
+Two AWS constraints are visible here rather than stated: **Fargate has no GPU support**, so `gpu-small`, `gpu-large` and every model service need EC2 capacity providers; and GPU extraction runs on **Spot**, which is only safe because every stage is idempotent under `(video_id, stage, model_id)` and a preempted worker releases its lease instead of draining.
+
 ### Alignment
 
 Every extractor emits `(t_start, t_end, modality, payload)` in **normalized-media seconds**. Social-platform downloads routinely carry a non-zero container start offset and variable frame rate — if speech recognition read source timestamps while the frame extractor counted frames, audio and visuals would drift 200–500ms apart and silently break the exact correlation this project depends on. So `normalize` forces constant frame rate, strips the start offset, and everything reports against that clock.
